@@ -1,0 +1,381 @@
+---
+title: "Sentiment analysis on youtube comments"
+output: html_document 
+---
+
+## Get data from youtube api
+```{r}
+library(tuber)
+app_id <- "55618119590-d7rnr16n2dq4jqh3hh4amaclvgjgobo5.apps.googleusercontent.com"
+api_key <- "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"
+yt_oauth(app_id, api_key,token='')
+comments1 <- get_all_comments(video_id = "wAZZ-UWGVHI")
+comments2 <- get_all_comments(video_id = "FxosOM_Lg9o")
+comments3 <- get_all_comments(video_id = "W0QuOku3LRo")
+comments4 <- get_all_comments(video_id = "b3x28s61q3c")
+comments5 <- get_all_comments(video_id = "4mgePWWCAmA")
+comments6 <- get_all_comments(video_id = "kXiYSI7H2b0")
+comments7 <- get_all_comments(video_id = "ErMwWXQxHp0")
+comments8 <- get_all_comments(video_id = "18fwz9Itbvo")
+comments <- rbind(comments1,comments2,comments3,comments4,comments5,comments6,comments7,comments8)
+nrow(comments)
+write.csv(comments, file = "RawVideoComments.csv")
+```
+
+```{r}
+comments <- read.csv("RawVideoComments.csv", header=T, dec=".",sep=",")
+# Load Libraries
+library(tm)
+library(plyr)
+library(class)
+library(caret)
+library(e1071)
+library("syuzhet")
+library(sentimentr)
+names(comments)[names(comments) == 'X'] <- 'element_id'
+head(comments)
+```
+
+## Data cleaning using VCorpus
+```{r}
+# Data cleaning
+
+df.comments.corpus <- VCorpus(VectorSource(comments$textOriginal))
+inspect(df.comments.corpus[1:2])
+
+# Character representation of a document
+#lapply(df.comments.corpus[1:1], as.character)
+
+# Convert to lowercase
+df.comments.corpus.lc <- tm_map(df.comments.corpus, content_transformer(tolower))
+#lapply(df.comments.corpus.lc[1:1], as.character)
+
+# Remove stop-words
+df.comments.corpus.sw <- tm_map(df.comments.corpus.lc, removeWords, stopwords("english"))
+#lapply(df.comments.corpus.sw[1:1], as.character)
+
+# specify your custom stopwords as a character vector
+df.comments.corpus.sw <- tm_map(df.comments.corpus.sw, removeWords, c("can", "india", "get","linus","just","will","use","one","like","even","video","thing","also","know","year")) 
+
+#Strip whitespace
+df.comments.corpus.ws <- tm_map(df.comments.corpus.sw, content_transformer(stripWhitespace))
+#lapply(df.comments.corpus.ws[1:1], as.character)
+
+# Remove punctuation
+df.comments.corpus.rp <- tm_map(df.comments.corpus.ws, content_transformer(removePunctuation))
+#lapply(df.comments.corpus.rp[1:1], as.character)
+
+# Text stemming - which reduces words to their root form
+df.comments.corpus.ts <- tm_map(df.comments.corpus.rp, content_transformer(stemDocument))
+#lapply(df.comments.corpus.rp[1:1], as.character)
+
+df.comments.corpus.clean <- df.comments.corpus.ts
+
+# Convert to dataframe
+clean.df <- data.frame(text=unlist(sapply(df.comments.corpus.clean, `[`, "content")), 
+    stringsAsFactors=F,element_id=comments$element_id, videoId=comments$videoId )
+head(clean.df)
+```
+```{r}
+# Build a term-document matrix
+TextDoc_dtm <- TermDocumentMatrix(df.comments.corpus.clean)
+dtm_m <- as.matrix(TextDoc_dtm)
+# Sort by decreasing value of frequency
+dtm_v <- sort(rowSums(dtm_m),decreasing=TRUE)
+dtm_d <- data.frame(word = names(dtm_v),freq=dtm_v)
+# Display the top 5 most frequent words
+head(dtm_d, 10)
+```
+
+
+
+## Word cloud view of comments
+```{r}
+
+library(dplyr)
+library(tidytext)
+library(textdata)
+library(wordcloud)
+library(reshape2)
+dtm_d %>%
+      inner_join(get_sentiments("bing")) %>%
+      count(word,freq,sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "freq", fill = 0) %>%
+  comparison.cloud(max.words=50)
+```
+```{r}
+
+dtm_d %>%
+      inner_join(get_sentiments("afinn")) %>% count(word,freq,value, sort = TRUE) %>%
+  acast(word ~ ifelse(value > 0,"positive","negative"), value.var = "freq", fill = 0) %>%
+  comparison.cloud(max.words=50)
+```
+
+## Sentiment scores with Syuzhet
+```{r}
+syuzhet_vector <- get_sentiment(clean.df$text, method="syuzhet")
+# see the first row of the vector
+head(syuzhet_vector)
+# see summary statistics of the vector
+mean(syuzhet_vector)
+
+bing_vector <- get_sentiment(clean.df$text, method="bing")
+# see the first row of the vector
+head(bing_vector)
+# see summary statistics of the vector
+mean(bing_vector)
+
+afinn_vector <- get_sentiment(clean.df$text, method="afinn")
+# see the first row of the vector
+head(afinn_vector)
+# see summary statistics of the vector
+mean(afinn_vector)
+
+sentiment.scores.df<- data.frame(syuzhet_vector,bing_vector,afinn_vector)
+sentiment.scores.df$element_id <- seq.int(nrow(sentiment.scores.df)) 
+head(sentiment.scores.df)
+
+```
+
+## Analyzing the comments as a whole sentence using sentimentr package
+```{r}
+
+sentimentr.score <- sentiment(get_sentences(clean.df$text)) %>% 
+  group_by(element_id) %>% 
+  summarize(meanSentiment = mean(sentiment))
+
+x <- merge(sentimentr.score, sentiment.scores.df, by = "element_id") 
+youtube_comments_data <- merge(x, comments, by = "element_id") 
+#youtube_comments_data$publishedAt <- as.Date(youtube_comments_data$publishedAt, format="%Y-%m-%d")
+youtube_comments_data$year <- format(as.Date(youtube_comments_data$publishedAt, format="%Y-%m-%d"),"%Y-%m")
+
+head(youtube_comments_data)
+# plot of sentiment over time & automatically choose a method to model the change
+ggplot(youtube_comments_data, aes(x = as.Date(publishedAt), y = meanSentiment)) + 
+  geom_point(aes(color = videoId))+ # add points to our plot, color-coded by president
+  geom_smooth(method = "auto") # pick a method & fit a model
+```
+```{r}
+# plot of sentiment by president
+ggplot(youtube_comments_data, aes(x = videoId, y = meanSentiment, color = videoId)) + 
+  geom_boxplot() # draw a boxplot for each president
+```
+
+## Comparision of sentiment scores  of sentimentr package, syuzhet, bing and affin
+```{r}
+
+sentimentr <- c("Sentimentr", min(youtube_comments_data$meanSentiment), max(youtube_comments_data$meanSentiment),sum(youtube_comments_data$meanSentiment < 0),sum(youtube_comments_data$meanSentiment == 0),sum(youtube_comments_data$meanSentiment > 0))
+syuzhet <- c("syuzhet", min(youtube_comments_data$syuzhet_vector), max(youtube_comments_data$syuzhet_vector),sum(youtube_comments_data$syuzhet_vector < 0),sum(youtube_comments_data$syuzhet_vector == 0),sum(youtube_comments_data$syuzhet_vector > 0))
+bing <- c("bing", min(youtube_comments_data$bing_vector),max(youtube_comments_data$bing_vector),sum(youtube_comments_data$bing_vector < 0),sum(youtube_comments_data$bing_vector == 0),sum(youtube_comments_data$bing_vector > 0))
+afinn <- c("afinn",  min(youtube_comments_data$afinn_vector),max(youtube_comments_data$afinn_vector),sum(youtube_comments_data$afinn_vector < 0),sum(youtube_comments_data$afinn_vector == 0),sum(youtube_comments_data$afinn_vector > 0))
+
+compare.scores <- rbind(sentimentr,syuzhet,bing,afinn)
+colnames(compare.scores) <- c("Method", "Most negative score", "Most positive score","Num of Negative","Num of Neutral","Num of Positive")
+compare.scores <- data.frame(compare.scores)
+compare.scores$Num.of.Neutral <- as.integer(compare.scores$Num.of.Neutral)
+compare.scores$Num.of.Negative <- as.integer(compare.scores$Num.of.Negative)
+compare.scores$Num.of.Positive <- as.integer(compare.scores$Num.of.Positive)
+barplot(c(as.integer(compare.scores$Num.of.Neutral),0,as.integer(compare.scores$Num.of.Negative),0,as.integer(compare.scores$Num.of.Negative))
+,names.arg = c(" " ,"Neural" , " ", " "," ", "","Negative", " "," "," "," ","Positive ", " "," "),col = c("darkred", "darkgoldenrod", "darkgreen","yellow", "darkred", "darkred","darkgoldenrod", "darkgreen","yellow", "darkred", "darkred","darkgoldenrod", "darkgreen","yellow"),main = "Comments Classification",legend=TRUE,cex.names=0.7, las=1,beside = TRUE,xlim = c(0, 20))
+opar =par(oma = c(0,0,0,0), mar = c(0,0,0,0), new = TRUE)
+legend(x = "right", legend = c("sentimentr","syuzhet","bing","affin"), fill = c("darkred", "darkgoldenrod", "darkgreen","yellow"), bty = "n",y.intersp = 2)
+par(opar) # Reset par
+
+
+
+quickplot(Method, data=compare.scores, weight=Num.of.Neutral, geom="bar", fill=Method, ylab="count of neutral",)+ggtitle("Neutral video sentiments")
+quickplot(Method, data=compare.scores, weight=Num.of.Negative, geom="bar", fill=Method, ylab="count of negative")+ggtitle("Negative video sentiments")
+quickplot(Method, data=compare.scores, weight=Num.of.Positive, geom="bar", fill=Method, ylab="count of Positive")+ggtitle("Positive video sentiments")
+```
+## Analyzing the Sentiment for a video id
+```{r}
+score.video <- youtube_comments_data %>% 
+  group_by(videoId) %>% 
+  summarize(videoSentimentr = mean(meanSentiment), videoSyuzhetSentiment = mean(syuzhet_vector),videoBingSentiment = mean(bing_vector),videoAfinnSentiment = mean(afinn_vector))
+
+score.video
+```
+## Emotion classification is done using NRC Word-Emotion Association Lexicon (aka EmoLex). The get_nrc_sentiments function returns a data frame with each row representing a sentence from the original file.
+```{r}
+FxosOM_Lg9o<-get_nrc_sentiment(clean.df[clean.df$videoId=="FxosOM_Lg9o",]$text)
+# head(d,10) - to see top 10 lines of the get_nrc_sentiment dataframe
+head (FxosOM_Lg9o,10)
+```
+## Visualize emotions for a video with negative sentiment scores.
+```{r}
+#transpose
+td<-data.frame(t(FxosOM_Lg9o))
+#The function rowSums computes column sums across rows for each level of a grouping variable.
+td_new <- data.frame(rowSums(td[2:253]))
+#Transformation and cleaning
+names(td_new)[1] <- "count"
+td_new <- cbind("sentiment" = rownames(td_new), td_new)
+rownames(td_new) <- NULL
+td_new2<-td_new[1:8,]
+#Plot One - count of words associated with each sentiment
+quickplot(sentiment, data=td_new2, weight=count, geom="bar", fill=sentiment, ylab="count")+ggtitle("FxosOM_Lg9o video sentiments")
+```
+
+
+# Kaggle comments analysis with different sentiment analysis packages
+```{r}
+kaggle.comments <- read.csv("Kaggle/comments.csv", header=T, dec=".",sep=",")
+kaggle.comments$element_id <- seq.int(nrow(kaggle.comments))
+names(kaggle.comments)[names(kaggle.comments) == 'Video.ID'] <- 'videoId'
+head(kaggle.comments)
+```
+```{r}
+# Data cleaning
+
+kaggle.comments.corpus <- VCorpus(VectorSource(kaggle.comments$Comment))
+inspect(kaggle.comments.corpus[1:2])
+
+
+# Convert to lowercase
+kaggle.comments.corpus.lc <- tm_map(kaggle.comments.corpus, content_transformer(tolower))
+
+# Remove stop-words
+kaggle.comments.corpus.sw <- tm_map(kaggle.comments.corpus.lc, removeWords, stopwords("english"))
+#lapply(df.comments.corpus.sw[1:1], as.character)
+
+# specify your custom stopwords as a character vector
+kaggle.comments.corpus.sw <- tm_map(kaggle.comments.corpus.sw, removeWords, c("can", "india", "get","linus","just","will","use","one","like","even","video","thing","also","know","year")) 
+
+#Strip whitespace
+kaggle.comments.corpus.ws <- tm_map(kaggle.comments.corpus.sw, content_transformer(stripWhitespace))
+
+# Remove punctuation
+kaggle.comments.corpus.rp <- tm_map(kaggle.comments.corpus.ws, content_transformer(removePunctuation))
+
+
+# Text stemming - which reduces words to their root form
+kaggle.comments.corpus.ts <- tm_map(kaggle.comments.corpus.rp, content_transformer(stemDocument))
+
+kaggle.comments.corpus.clean <- kaggle.comments.corpus.ts
+
+# Convert to dataframe
+clean.df <- data.frame(text=unlist(sapply(kaggle.comments.corpus.clean, `[`, "content")), 
+    stringsAsFactors=F,element_id=kaggle.comments$element_id, videoId=kaggle.comments$videoId )
+head(clean.df)
+```
+## Sentiment scores with Syuzhet
+### Convert all the vectors to same scale using sign (this converts values to between -1 and 1)
+```{r}
+syuzhet_vector <- get_sentiment(clean.df$text, method="syuzhet")
+syuzhet_vector <- sign(syuzhet_vector)
+# see the first row of the vector
+head(syuzhet_vector)
+# see summary statistics of the vector
+mean(syuzhet_vector)
+
+bing_vector <- get_sentiment(clean.df$text, method="bing")
+bing_vector <- sign(bing_vector)
+# see the first row of the vector
+head(bing_vector)
+# see summary statistics of the vector
+mean(bing_vector)
+
+afinn_vector <- get_sentiment(clean.df$text, method="afinn")
+afinn_vector <- sign(afinn_vector)
+# see the first row of the vector
+head(afinn_vector)
+# see summary statistics of the vector
+mean(afinn_vector)
+
+sentiment.scores.df<- data.frame(syuzhet_vector,bing_vector,afinn_vector)
+sentiment.scores.df$element_id <- seq.int(nrow(sentiment.scores.df)) 
+head(sentiment.scores.df)
+```
+```{r}
+sentimentr.score <- sentiment(get_sentences(clean.df$text)) %>% 
+  group_by(element_id) %>% 
+  summarize(meanSentiment = sign(mean(sentiment)))
+```
+```{r}
+x <- merge(sentimentr.score, sentiment.scores.df, by = "element_id") 
+kaggle.data <- merge(kaggle.comments,x, by = "element_id") 
+kaggle.data$meanSentiment <- with(kaggle.data, ifelse(meanSentiment == 0, 1, ifelse(meanSentiment > 0,2,0)))
+kaggle.data$syuzhet_vector <- with(kaggle.data, ifelse(syuzhet_vector == 0, 1, ifelse(syuzhet_vector > 0,2,0)))
+kaggle.data$bing_vector <- with(kaggle.data, ifelse(bing_vector == 0, 1, ifelse(bing_vector > 0,2,0)))
+kaggle.data$afinn_vector <- with(kaggle.data, ifelse(afinn_vector == 0, 1, ifelse(afinn_vector > 0,2,0)))
+head(kaggle.data)
+```
+## Confusion matrix for scores using sentimentr
+```{r}
+cm <- confusionMatrix(data = as.factor(kaggle.data$Sentiment), reference = as.factor(kaggle.data$meanSentiment))
+data.frame(cm$table)
+ggplot(data =  data.frame(cm$table), mapping = aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = sprintf("%1.0f", Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "red") +
+  theme_bw() + theme(legend.position = "none")+
+  ggtitle("sentimentr confusion matrix with Kaggle tagged data")
+```
+## Confusion matrix for scores using syuzhet_vector
+```{r}
+cm <-confusionMatrix(data = as.factor(kaggle.data$Sentiment), reference = as.factor(kaggle.data$syuzhet_vector))
+data.frame(cm$table)
+ggplot(data =  data.frame(cm$table), mapping = aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = sprintf("%1.0f", Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "red") +
+  theme_bw() + theme(legend.position = "none")+
+  ggtitle("syuzhet_vector confusion matrix with Kaggle tagged data")
+```
+## Confusion matrix for scores using bing_vector
+```{r}
+cm <- confusionMatrix(data = as.factor(kaggle.data$Sentiment), reference = as.factor(kaggle.data$bing_vector))
+data.frame(cm$table)
+ggplot(data =  data.frame(cm$table), mapping = aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = sprintf("%1.0f", Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "red") +
+  theme_bw() + theme(legend.position = "none")+
+  ggtitle("bing_vector confusion matrix with Kaggle tagged data")
+```
+## Confusion matrix for scores using afinn_vector
+```{r}
+cm <- confusionMatrix(data = as.factor(kaggle.data$Sentiment), reference = as.factor(kaggle.data$afinn_vector))
+data.frame(cm$table)
+ggplot(data =  data.frame(cm$table), mapping = aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = sprintf("%1.0f", Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "red") +
+  theme_bw() + theme(legend.position = "none")+
+  ggtitle("afinn_vector confusion matrix with Kaggle tagged data")
+```
+
+```{r}
+library(topicmodels)
+library(quanteda)
+fulltext <- corpus(kaggle.comments$Comment)
+dtm <- dfm(fulltext, # input text
+tolower = TRUE, stem = TRUE, # set lowercasing and stemming to TRUE
+remove = stopwords("english")) # provide the stopwords for deletion
+doc_freq <- docfreq(dtm) # document frequency per term (column)
+dtm <- dtm[, doc_freq >= 2] # select terms with doc_freq >= 2
+dtm <- dfm_weight(dtm, "prop") # weight the features using prop
+docvars(dtm, "sentiment_class") <- kaggle.comments$Sentiment
+train_dtm <- dfm_sample(dtm, size = 12000)
+test_dtm <- dtm[setdiff(docnames(dtm), docnames(train_dtm)),]
+```
+## textmodel_nb Naive Bayes classifier for texts. Fit a multinomial or Bernoulli Naive Bayes model, given a dfm and some training labels.
+
+```{r}
+library("quanteda.textmodels")
+# fit a Naive Bayes multinomial model and use it to predict the test data
+nb_model <- textmodel_nb(train_dtm, y = docvars(train_dtm, "sentiment_class"),distribution = "Bernoulli", prior = "docfreq")
+pred_nb <- predict(nb_model, newdata = test_dtm)
+
+# compare prediction (rows) and actual is_prewar value (columns) in a table
+table(prediction = pred_nb, sentiment_class = docvars(test_dtm, "sentiment_class"))
+cm <- confusionMatrix(data = as.factor(docvars(test_dtm, "sentiment_class")), reference = as.factor(pred_nb))
+cm
+data.frame(cm$table)
+ggplot(data =  data.frame(cm$table), mapping = aes(x = Prediction, y = Reference)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = sprintf("%1.0f", Freq)), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "red") +
+  theme_bw() + theme(legend.position = "none")+
+  ggtitle("Naive Bayes model confusion matrix with Kaggle tagged data")
+```
