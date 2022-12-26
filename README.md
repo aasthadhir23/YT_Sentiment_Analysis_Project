@@ -1,4 +1,4 @@
 # YT_Sentiment_Analysis_Project
 This repository contains all the information related to the project Youtube Sentiment Analysis. This project is made using R programming language.
-This report explains how sentiment is measured and analyzed using various data, including comments on YouTube videos. It also explains how different text classification methods work.
+This project explains how sentiment is measured and analyzed using various data, including comments on YouTube videos. It also explains how different text classification methods work.
 Social media comments and post types are a way for people to share their opinions. Sentiment analysis is done to identify public opinion. This information is used to make important business decisions. Some key features that are extracted from the analysis are polarity (positive or negative), facts (objective statements), and opinions (people's point of view). This project uses YouTube comment data to analyze sentiment responses to videos. The main goal of this project is to perform advanced textual analysis on YouTube comment data using the popular open source platform R.
